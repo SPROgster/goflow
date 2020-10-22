@@ -36,10 +36,7 @@ var (
 
 	Workers  = flag.Int("workers", 1, "Number of workers per collector")
 	LogLevel = flag.String("loglevel", "info", "Log level")
-	LogFmt   = flag.String("logfmt", "normal", "Log formatter")
 
-	EnableKafka = flag.Bool("kafka", true, "Enable Kafka")
-	FixedLength = flag.Bool("proto.fixedlen", false, "Enable fixed length protobuf")
 	MetricsAddr = flag.String("metrics.addr", ":8080", "Metrics address")
 	MetricsPath = flag.String("metrics.path", "/metrics", "Metrics path")
 
@@ -69,45 +66,29 @@ func main() {
 	lvl, _ := log.ParseLevel(*LogLevel)
 	log.SetLevel(lvl)
 
-	var defaultTransport utils.Transport
-	defaultTransport = &utils.DefaultLogTransport{}
-
-	switch *LogFmt {
-	case "json":
-		log.SetFormatter(&log.JSONFormatter{})
-		defaultTransport = &utils.DefaultJSONTransport{}
-	}
-
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	log.Info("Starting GoFlow")
 
 	sSFlow := &utils.StateSFlow{
-		Transport: defaultTransport,
-		Logger:    log.StandardLogger(),
+		Logger: log.StandardLogger(),
 	}
 	sNF := &utils.StateNetFlow{
-		Transport: defaultTransport,
-		Logger:    log.StandardLogger(),
+		Logger: log.StandardLogger(),
 	}
 	sNFL := &utils.StateNFLegacy{
-		Transport: defaultTransport,
-		Logger:    log.StandardLogger(),
+		Logger: log.StandardLogger(),
 	}
+
+	t, err := transport.CreateTransport()
+	if err != nil {
+		log.Fatal(err)
+	}
+	sSFlow.Transport = *t
+	sNFL.Transport = *t
+	sNF.Transport = *t
 
 	go httpServer(sNF)
-
-	if *EnableKafka {
-		kafkaState, err := transport.StartKafkaProducerFromArgs(log.StandardLogger())
-		if err != nil {
-			log.Fatal(err)
-		}
-		kafkaState.FixedLengthProto = *FixedLength
-
-		sSFlow.Transport = kafkaState
-		sNFL.Transport = kafkaState
-		sNF.Transport = kafkaState
-	}
 
 	wg := &sync.WaitGroup{}
 	if *SFlowEnable {

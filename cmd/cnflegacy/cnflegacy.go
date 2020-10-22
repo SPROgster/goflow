@@ -24,10 +24,7 @@ var (
 
 	Workers  = flag.Int("workers", 1, "Number of NetFlow v5 workers")
 	LogLevel = flag.String("loglevel", "info", "Log level")
-	LogFmt   = flag.String("logfmt", "normal", "Log formatter")
 
-	EnableKafka = flag.Bool("kafka", true, "Enable Kafka")
-	FixedLength = flag.Bool("proto.fixedlen", false, "Enable fixed length protobuf")
 	MetricsAddr = flag.String("metrics.addr", ":8080", "Metrics address")
 	MetricsPath = flag.String("metrics.path", "/metrics", "Metrics path")
 
@@ -54,39 +51,27 @@ func main() {
 	lvl, _ := log.ParseLevel(*LogLevel)
 	log.SetLevel(lvl)
 
-	var defaultTransport utils.Transport
-	defaultTransport = &utils.DefaultLogTransport{}
-
-	switch *LogFmt {
-	case "json":
-		log.SetFormatter(&log.JSONFormatter{})
-		defaultTransport = &utils.DefaultJSONTransport{}
-	}
-
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	log.Info("Starting GoFlow")
 
 	s := &utils.StateNFLegacy{
-		Transport: defaultTransport,
-		Logger:    log.StandardLogger(),
+		Logger: log.StandardLogger(),
 	}
+
+	t, err := transport.CreateTransport()
+	if err != nil {
+		log.Fatal(err)
+	}
+	s.Transport = *t
 
 	go httpServer()
 
-	if *EnableKafka {
-		kafkaState, err := transport.StartKafkaProducerFromArgs(log.StandardLogger())
-		if err != nil {
-			log.Fatal(err)
-		}
-		kafkaState.FixedLengthProto = *FixedLength
-		s.Transport = kafkaState
-	}
 	log.WithFields(log.Fields{
 		"Type": "NetFlowLegacy"}).
 		Infof("Listening on UDP %v:%v", *Addr, *Port)
 
-	err := s.FlowRoutine(*Workers, *Addr, *Port, *Reuse)
+	err = s.FlowRoutine(*Workers, *Addr, *Port, *Reuse)
 	if err != nil {
 		log.Fatalf("Fatal error: could not listen to UDP (%v)", err)
 	}
