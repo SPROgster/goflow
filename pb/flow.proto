@@ -120,4 +120,5 @@ message FlowMessage {
   // Custom fields: start after ID 1000:
   // uint32 MyCustomField = 1000;
 
+  bytes PacketSample = 1000;
 }

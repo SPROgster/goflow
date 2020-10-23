@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 
+	"github.com/cloudflare/goflow/v3/producer"
 	"github.com/cloudflare/goflow/v3/transport"
 	"github.com/cloudflare/goflow/v3/utils"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -27,6 +28,8 @@ var (
 
 	MetricsAddr = flag.String("metrics.addr", ":8080", "Metrics address")
 	MetricsPath = flag.String("metrics.path", "/metrics", "Metrics path")
+
+	SFlowSample = flag.Bool("sflow.raw.sample", false, "Copy sFlow sample header if present")
 
 	Version = flag.Bool("v", false, "Print version")
 )
@@ -64,6 +67,12 @@ func main() {
 		log.Fatal(err)
 	}
 	s.Transport = *t
+
+	if *SFlowSample {
+		s.Config = &producer.SFlowProducerConfig{
+			RawSample: true,
+		}
+	}
 
 	go httpServer()
 

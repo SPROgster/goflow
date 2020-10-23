@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sync"
 
+	"github.com/cloudflare/goflow/v3/producer"
 	"github.com/cloudflare/goflow/v3/transport"
 	"github.com/cloudflare/goflow/v3/utils"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -23,6 +24,7 @@ var (
 	SFlowAddr   = flag.String("sflow.addr", "", "sFlow listening address")
 	SFlowPort   = flag.Int("sflow.port", 6343, "sFlow listening port")
 	SFlowReuse  = flag.Bool("sflow.reuserport", false, "Enable so_reuseport for sFlow")
+	SFlowSample = flag.Bool("sflow.raw.sample", false, "Copy sFlow sample header if present")
 
 	NFLEnable = flag.Bool("nfl", true, "Enable NetFlow v5")
 	NFLAddr   = flag.String("nfl.addr", "", "NetFlow v5 listening address")
@@ -87,6 +89,12 @@ func main() {
 	sSFlow.Transport = *t
 	sNFL.Transport = *t
 	sNF.Transport = *t
+
+	if *SFlowSample {
+		sSFlow.Config = &producer.SFlowProducerConfig{
+			RawSample: true,
+		}
+	}
 
 	go httpServer(sNF)
 

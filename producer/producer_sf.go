@@ -24,6 +24,7 @@ func GetSFlowFlowSamples(packet *sflow.Packet) []interface{} {
 
 type SFlowProducerConfig struct {
 	DecodeGRE bool
+	RawSample bool
 }
 
 func ParseSampledHeader(flowMessage *flowmessage.FlowMessage, sampledHeader *sflow.SampledHeader) error {
@@ -32,11 +33,22 @@ func ParseSampledHeader(flowMessage *flowmessage.FlowMessage, sampledHeader *sfl
 
 func ParseSampledHeaderConfig(flowMessage *flowmessage.FlowMessage, sampledHeader *sflow.SampledHeader, config *SFlowProducerConfig) error {
 	var decodeGRE bool
+	var copySample bool
 	if config != nil {
 		decodeGRE = config.DecodeGRE
+
+		if flowMessage.PacketSample == nil {
+			copySample = config.RawSample
+		}
 	}
 
 	data := (*sampledHeader).HeaderData
+
+	if copySample {
+		flowMessage.PacketSample = make([]byte, len(data))
+		copy(flowMessage.PacketSample, data)
+	}
+
 	switch (*sampledHeader).Protocol {
 	case 1: // Ethernet
 		var hasPPP bool
