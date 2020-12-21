@@ -9,15 +9,18 @@ import (
 	flowmessage "github.com/cloudflare/goflow/v3/pb"
 	"github.com/cloudflare/goflow/v3/utils"
 	proto "github.com/golang/protobuf/proto"
+	log "github.com/sirupsen/logrus"
 	"github.com/streadway/amqp"
 	"os"
+	"time"
 )
 
 var (
-	RMQTLS          *bool
-	RMQSASL         *bool
-	RMQSrv          *string
-	RMQExchangeName *string
+	RMQTLS               *bool
+	RMQSASL              *bool
+	RMQSrv               *string
+	RMQExchangeName      *string
+	RMQReconnectionDelay *int
 
 	EmptySaslAuth = errors.New("RabbitMQ SASL config from environment was unsuccessful. RABBITMQ_SASL_USER and RABBITMQ_SASL_PASS need to be set.")
 )
@@ -25,9 +28,13 @@ var (
 type RMQState struct {
 	FixedLengthProto bool
 
+	url    string
+	config *amqp.Config
+
 	con      *amqp.Connection
 	channel  *amqp.Channel
 	exchange string
+	stop     chan bool
 }
 
 func RMQRegisterFlags() {
@@ -35,6 +42,7 @@ func RMQRegisterFlags() {
 	RMQSASL = flag.Bool("rabbitmq.sasl", false, "Use SASL/PLAIN data to connect to RabbitMQ (TLS is recommended and the environment variables RABBITMQ_SASL_USER and RABBITMQ_SASL_PASS need to be set)")
 	RMQSrv = flag.String("rabbitmq.srv", "amqp://guest:guest@localhost:5672", "SRV record containing a list of RabbitMQ brokers")
 	RMQExchangeName = flag.String("rabbitmq.exchange", "flow-messages", "RabbitMQ Exchange to publish to")
+	RMQReconnectionDelay = flag.Int("rabbitmq.reconnectdelay", 5, "Delay in seconds to reconnect")
 }
 
 func StartRMQProducerFromArgs(log utils.Logger) (*RMQState, error) {
@@ -114,10 +122,15 @@ func StartRMQProducer(url string, exchange string, useTls, useSasl bool, log uti
 	}
 
 	state := RMQState{
+		url:      url,
+		config:   conf,
 		con:      con,
 		exchange: exchange,
 		channel:  ch,
+		stop:     make(chan bool),
 	}
+
+	go state.watchdog()
 
 	return &state, nil
 }
@@ -134,8 +147,13 @@ func (s *RMQState) Close() {
 	}
 }
 
-func (s RMQState) SendRMQFlowMessage(flowMessage *flowmessage.FlowMessage) {
+func (s RMQState) SendRMQFlowMessage(flowMessage *flowmessage.FlowMessage) error {
 	var b []byte
+	c := s.channel
+	if c == nil {
+		return errors.New("RabbitMQ connection lost")
+	}
+
 	if !s.FixedLengthProto {
 		b, _ = proto.Marshal(flowMessage)
 	} else {
@@ -144,7 +162,7 @@ func (s RMQState) SendRMQFlowMessage(flowMessage *flowmessage.FlowMessage) {
 		b = buf.Bytes()
 	}
 
-	_ = s.channel.Publish(
+	err := c.Publish(
 		s.exchange,
 		"",
 		false,
@@ -154,10 +172,107 @@ func (s RMQState) SendRMQFlowMessage(flowMessage *flowmessage.FlowMessage) {
 			Body:        b,
 		},
 	)
+
+	return err
 }
 
 func (s RMQState) Publish(msgs []*flowmessage.FlowMessage) {
 	for _, msg := range msgs {
 		s.SendRMQFlowMessage(msg)
+	}
+}
+
+func (s *RMQState) reconnect() *amqp.Connection {
+	for {
+		log.Info("Reconnecting to RabbitMQ server")
+		var con *amqp.Connection
+		var err error
+
+		if s.config != nil {
+			con, err = amqp.DialConfig(s.url, *s.config)
+		} else {
+			con, err = amqp.Dial(s.url)
+		}
+
+		if err == nil {
+			log.Info("Connection established")
+			s.con = con
+			return con
+		}
+
+		log.WithError(err).WithField("delay", *RMQReconnectionDelay).Error("Unable to reconnect. Sleeping")
+		time.Sleep(time.Duration(*RMQReconnectionDelay) * time.Second)
+
+		t := time.NewTimer(time.Duration(*RMQReconnectionDelay) * time.Second)
+		select {
+		case <-s.stop:
+			return nil
+
+		case <-t.C:
+		}
+	}
+}
+
+func (s *RMQState) recreateChannel() *amqp.Channel {
+	for {
+		log.Info("Recreating RabbitMQ channel")
+
+		ch, err := s.con.Channel()
+
+		if err == nil {
+			log.Info("Channel recreated")
+			s.channel = ch
+
+			ch.ExchangeDeclare(
+				s.exchange,
+				"direct",
+				true,
+				false,
+				false,
+				false,
+				nil,
+			)
+
+			return ch
+		}
+
+		log.WithError(err).WithField("delay", *RMQReconnectionDelay).Error("Unable to create channel. Sleeping")
+		time.Sleep(time.Duration(*RMQReconnectionDelay) * time.Second)
+
+		t := time.NewTimer(time.Duration(*RMQReconnectionDelay) * time.Second)
+		select {
+		case <-s.stop:
+			return nil
+
+		case <-t.C:
+		}
+	}
+}
+
+func (s *RMQState) watchdog() {
+	for {
+		select {
+		case <-s.stop:
+			return
+
+		case reason, ok := <-s.con.NotifyClose(make(chan *amqp.Error)):
+			s.channel = nil
+			if ok {
+				log.WithError(reason).Error("Connection closed")
+			}
+			if s.reconnect() != nil && s.recreateChannel() != nil {
+				return
+			}
+
+		case reason, ok := <-s.channel.NotifyClose(make(chan *amqp.Error)):
+			if ok {
+				log.WithError(reason).Error("Channel closed")
+			}
+			_ = s.channel.Close()
+
+			if s.recreateChannel() != nil {
+				return
+			}
+		}
 	}
 }
